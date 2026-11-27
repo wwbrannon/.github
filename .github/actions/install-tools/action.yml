@@ -1,0 +1,42 @@
+name: Install pinned tools
+description: Install CI tools from their pinned images, in this action's Dockerfile or a repository's own
+
+# Each binary is copied out of its tool's official image, pinned by tag and
+# digest, without running anything in the image, and after verifying the
+# image's signature where its vendor signs it -- with cosign, installed first
+# from its own checksummed pin. Dependabot keeps the image pins current.
+# Installs into $RUNNER_TEMP/tools, put on PATH.
+#
+# The pins are the Dockerfile beside this file unless `pins` names another, in
+# the same format; that file says what the format is. Everything this action
+# runs is in its own directory or its sibling install-cosign's, never the
+# caller's checkout, so it works the same from another repository.
+inputs:
+  tools:
+    description: space-separated stage names from the pins file, e.g. "gitleaks actionlint"
+    required: true
+  pins:
+    description: a pins file in the caller's checkout, relative to the workspace; empty for this action's own
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: bash "$GITHUB_ACTION_PATH/../install-cosign/install-cosign.sh"
+    - shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+        PINS: ${{ inputs.pins }}
+      run: |
+        set -euo pipefail
+        if [ -n "$PINS" ]; then
+          PINNED_TOOLS_FILE="$GITHUB_WORKSPACE/$PINS"
+          export PINNED_TOOLS_FILE
+        fi
+        dir="$RUNNER_TEMP/tools"
+        # shellcheck disable=SC2086 # TOOLS is a list
+        bash "$GITHUB_ACTION_PATH/pinned-tool.sh" install "$dir" $TOOLS
+        echo "$dir" >> "$GITHUB_PATH"

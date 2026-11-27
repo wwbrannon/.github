@@ -1,0 +1,143 @@
+name: Claude review (reusable)
+
+# Reviews a pull request with .github/actions/claude-review and posts the
+# result as a pull request review: findings on lines the diff touches as inline
+# comments, the rest in the review body, with the tokens the review used in its
+# footer. Every push gets a new review, so earlier ones and their timestamps
+# stay in the history. Advisory: the job fails only if the review itself
+# couldn't be produced, never because of what it found, so it doesn't block a
+# merge unless made a required check.
+#
+# Called from a workflow on pull_request (types opened, synchronize, reopened,
+# ready_for_review), with pull-requests: write. The caller decides whether
+# reviews are on (the README's example: the CLAUDE_REVIEW_ENABLED variable) and
+# passes one of the two credentials. The review criteria are the caller's, in
+# .github/claude-review/prompt.md on its default branch.
+
+on:
+  workflow_call:
+    inputs:
+      budget-usd:
+        description: a runaway guard, in dollars at list price (a ~1.4k-line diff cost about $0.80)
+        type: string
+        default: "5"
+      model:
+        description: the model; empty for the one the prompts were tuned on
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    # Drafts wait until they're ready. PRs from forks are skipped: they get no
+    # secrets, so the review couldn't run, and the usual workaround
+    # (pull_request_target) hands those secrets to a workflow processing the
+    # fork's code. Dependabot PRs get only Dependabot secrets, so they are
+    # skipped too unless the secret is added there as well.
+    if: >-
+      !github.event.pull_request.draft
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write  # the review
+    steps:
+      # The criteria are the default branch's, never the PR's: a change must
+      # not be able to rewrite how it is reviewed. (A PR that edits the calling
+      # workflow does run its own copy, as pull_request always does, but that
+      # edit is itself in the diff under review.) fetch-depth 0 fetches every
+      # branch, the PR's head among them. No credentials are kept: nothing
+      # after this step needs git access to the remote, and Claude reads this
+      # checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # This workflow's own repository, at the commit the caller pinned, so
+      # the actions below are exactly the ones that commit holds: a caller pins
+      # one SHA, and the workflow and its actions can't drift apart. The two
+      # values are checked first because, were either empty, checkout would
+      # quietly fall back to the caller's repository and run its actions.
+      - name: Find the shared actions
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty; can't tell which actions to run"
+            exit 1
+          fi
+          echo "shared actions: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .shared
+          persist-credentials: false
+
+      - uses: ./.shared/.github/actions/install-claude-code
+
+      - id: review
+        uses: ./.shared/.github/actions/claude-review
+        with:
+          head: ${{ github.event.pull_request.head.sha }}
+          base: origin/${{ github.event.pull_request.base.ref }}
+          default-branch: ${{ github.event.repository.default_branch }}
+          pr-meta: |-
+            PR #${{ github.event.pull_request.number }} by ${{ github.event.pull_request.user.login }}: ${{ github.event.pull_request.title }}
+
+            ${{ github.event.pull_request.body }}
+          inline: "true"
+          budget-usd: ${{ inputs.budget-usd }}
+          model: ${{ inputs.model }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # A new review on every run, never an edit of an earlier one, so the
+      # history and its timestamps stay true. Inline comments must sit on lines
+      # GitHub shows in the diff; the script keeps only those, but if GitHub
+      # still rejects one, the whole review is refused, so it is posted again
+      # with those findings in the body instead. Bodies are capped at 65536
+      # characters.
+      - name: Post review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW: ${{ steps.review.outputs.output }}
+          INLINE: ${{ steps.review.outputs.inline }}
+          TOKENS: ${{ steps.review.outputs.tokens }}
+        run: |
+          inline="$INLINE"
+          [ -s "$inline" ] || { inline="$RUNNER_TEMP/inline.json"; echo '[]' > "$inline"; }
+          footer="<sub>Reviewed at ${HEAD_SHA:0:12}${TOKENS:+ using $TOKENS tokens}. Findings are advisory; verify before acting.</sub>"
+          head -c 60000 "$REVIEW" > "$RUNNER_TEMP/body.md"
+          post() {  # $1: body file, $2: comments file
+            jq -n --rawfile body "$1" --slurpfile comments "$2" --arg sha "$HEAD_SHA" \
+                --arg footer "$footer" \
+              '{commit_id: $sha, event: "COMMENT", body: ($body + "\n" + $footer), comments: $comments[0]}' \
+              | gh api --method POST "repos/$REPO/pulls/$PR_NUMBER/reviews" --input - >/dev/null
+          }
+          if post "$RUNNER_TEMP/body.md" "$inline"; then
+            exit 0
+          fi
+          echo "::warning::GitHub refused the inline comments; posting them in the review body"
+          {
+            cat "$RUNNER_TEMP/body.md"
+            jq -r 'if length > 0 then "\n### Findings that could not be posted inline\n" else empty end,
+              (.[] | "\n**`\(.path):\(.line)`** \(.body)\n")' "$inline"
+          } | head -c 64000 > "$RUNNER_TEMP/body-all.md" || true  # SIGPIPE when cut
+          echo '[]' > "$RUNNER_TEMP/none.json"
+          post "$RUNNER_TEMP/body-all.md" "$RUNNER_TEMP/none.json"

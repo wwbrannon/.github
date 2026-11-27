@@ -1,0 +1,20 @@
+name: Free up runner disk space
+description: Delete the preinstalled toolchains and images an image build doesn't need
+
+# GitHub's Ubuntu runners leave about 20G free on /; a large image build needs
+# more. These are the biggest preinstalled trees nothing here uses (Android,
+# .NET, PowerShell, Haskell, CodeQL, Swift, Heroku, the browsers, and the
+# setup-* tool cache), plus the cached Docker images. Run it before anything
+# that installs into those places -- the tool cache especially.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/share/powershell \
+          /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+          /usr/share/swift /usr/local/lib/heroku \
+          /usr/local/share/chromium /usr/local/share/edge_driver \
+          /opt/hostedtoolcache
+        sudo docker image prune --all --force
+        df -h /

@@ -1,0 +1,24 @@
+name: Install Claude Code
+description: Install the Claude Code CLI pinned in this action's lockfile
+
+# The native linux-x64 build, at the version and integrity hash in
+# package-lock.json beside this file, which Dependabot keeps current. npm ci
+# checks the tarball against that hash and installs exactly the lockfile;
+# --ignore-scripts so no package script runs (the platform package has none).
+# The review workflows hold secrets, so the pin they run must not come from the
+# change under review: they run this from the default branch's checkout, or
+# from a pinned release of the action.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/claude-code"
+        mkdir -p "$dir"
+        cp "$GITHUB_ACTION_PATH/package.json" "$GITHUB_ACTION_PATH/package-lock.json" "$dir/"
+        npm ci --prefix "$dir" --ignore-scripts --no-audit --no-fund
+        bin="$dir/node_modules/@anthropic-ai/claude-code-linux-x64"
+        test -x "$bin/claude"
+        echo "$bin" >> "$GITHUB_PATH"
+        "$bin/claude" --version

@@ -1,0 +1,269 @@
+name: Claude mention (reusable)
+
+# Answers @claude in a pull request's discussion: a PR comment, a review, or an
+# inline review comment. Claude reads the PR's head revision with the same
+# read-only tools as the review (.github/actions/claude-review, in its request
+# mode, following its respond.md), and this workflow posts its answer as a new
+# comment, or a reply in the thread for an inline comment. It can't push,
+# approve, or post anything else; Claude itself never holds a GitHub token.
+#
+# Called from a workflow on issue_comment (created), pull_request_review
+# (submitted) and pull_request_review_comment (created), with pull-requests:
+# write and no concurrency group: GitHub would cancel all but the newest
+# pending run in one, dropping mentions made in quick succession. The caller
+# decides whether mentions are answered (the README's example: the same
+# CLAUDE_REVIEW_ENABLED variable as the review) and passes one of the two
+# credentials.
+
+on:
+  workflow_call:
+    inputs:
+      budget-usd:
+        description: a runaway guard, in dollars at list price
+        type: string
+        default: "5"
+      model:
+        description: the model; empty for the one the prompts were tuned on
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  respond:
+    # Only people with write access can summon Claude: these events fire for
+    # anyone's comment, and the job runs with the secrets it is passed. This is
+    # a cheap first cut, which skips most comments without starting a runner:
+    # the association is loose (in an organization, MEMBER is any member and
+    # COLLABORATOR includes read-only outside collaborators), and contains() is
+    # case-insensitive and matches inside longer words. The first step checks
+    # both properly. Bots never match (GITHUB_TOKEN's own comments trigger no
+    # workflows anyway).
+    #
+    # On a fork's PR, reviews and inline comments run like pull_request does:
+    # a read-only token and no secrets, so the job could neither answer nor
+    # post a refusal, and is skipped. A plain PR comment runs in this
+    # repository's context whatever the PR's origin, so there Gather context
+    # finds the fork and posts the refusal.
+    if: >-
+      (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+      || (github.event_name == 'pull_request_review_comment'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+      || (github.event_name == 'pull_request_review'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && contains(github.event.review.body, '@claude')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.review.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write  # the reply and the 👀 reaction
+    env:
+      # Event fields reach scripts through env, never interpolated into them.
+      EVENT_NAME: ${{ github.event_name }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+      REQUEST_BODY: ${{ github.event.comment.body || github.event.review.body }}
+      REQUEST_AUTHOR: ${{ github.event.comment.user.login || github.event.review.user.login }}
+      REQUEST_URL: ${{ github.event.comment.html_url || github.event.review.html_url }}
+      COMMENT_ID: ${{ github.event.comment.id }}
+      # A reply to a reply goes to the thread's first comment.
+      THREAD_ID: ${{ github.event.comment.in_reply_to_id || github.event.comment.id }}
+    steps:
+      - name: Check for a mention
+        id: mention
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! grep -Eiq '(^|[^[:alnum:]_/.-])@claude($|[^[:alnum:]_-])' <<<"$REQUEST_BODY"; then
+            echo "No @claude mention, only a longer name containing it"
+            exit 0
+          fi
+          permission=$(gh api "repos/$REPO/collaborators/$REQUEST_AUTHOR/permission" --jq .permission)
+          case "$permission" in
+            admin | maintain | write) echo "go=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "@$REQUEST_AUTHOR has $permission access, not write; not answering" ;;
+          esac
+
+      # The default branch's criteria, as in the review, so a PR can't rewrite
+      # how Claude answers about it. A PR comment always runs the default
+      # branch's copy of the calling workflow too. A review or inline comment
+      # runs the PR's copy, as pull_request does, so a same-repo branch that
+      # edits it runs its edit with the secrets; that takes write access, which
+      # can add a pull_request workflow anyway, and the edit is in the diff for
+      # review. No credentials are kept.
+      - if: steps.mention.outputs.go == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # This workflow's own repository, at the commit the caller pinned, so
+      # the actions below are exactly the ones that commit holds: a caller pins
+      # one SHA, and the workflow and its actions can't drift apart. The two
+      # values are checked first because, were either empty, checkout would
+      # quietly fall back to the caller's repository and run its actions.
+      - name: Find the shared actions
+        if: steps.mention.outputs.go == 'true'
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty; can't tell which actions to run"
+            exit 1
+          fi
+          echo "shared actions: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.mention.outputs.go == 'true'
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .shared
+          persist-credentials: false
+
+      - uses: ./.shared/.github/actions/install-claude-code
+        if: steps.mention.outputs.go == 'true'
+
+      # Everything Claude gets besides the code: the request, which a trusted
+      # user wrote, and the PR and its discussion, which anyone may have, so
+      # the prompt treats them as untrusted. PRs from forks are refused, as the
+      # review skips them: this job holds the secrets, and Claude would be
+      # reading a stranger's code with them.
+      - name: Gather context
+        id: context
+        if: steps.mention.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_PATH: ${{ github.event.comment.path }}
+          REVIEW_LINE: ${{ github.event.comment.line || github.event.comment.original_line }}
+          DIFF_HUNK: ${{ github.event.comment.diff_hunk }}
+        run: |
+          case "$EVENT_NAME" in
+            issue_comment)
+              gh api --method POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes >/dev/null || true ;;
+            pull_request_review_comment)
+              gh api --method POST "repos/$REPO/pulls/comments/$COMMENT_ID/reactions" -f content=eyes >/dev/null || true ;;
+          esac
+          gh api "repos/$REPO/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pr.json"
+          head_repo=$(jq -r '.head.repo.full_name // ""' "$RUNNER_TEMP/pr.json")
+          if [ "$head_repo" != "$REPO" ]; then
+            echo "reply=fork" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head_sha=$(jq -r .head.sha "$RUNNER_TEMP/pr.json")
+          base_ref=$(jq -r .base.ref "$RUNNER_TEMP/pr.json")
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          # The head may have moved since checkout; fetch it explicitly, with
+          # the token in this one command's config rather than kept on disk.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref" \
+            "+refs/pull/$PR_NUMBER/head:refs/remotes/origin/pr-head"
+          git cat-file -e "$head_sha^{commit}"
+          # Once a PR has landed with a merge commit, its head is in the base
+          # branch and the merge base is the head itself. The base the PR was
+          # opened against still shows the change.
+          if git merge-base --is-ancestor "$head_sha" "origin/$base_ref"; then
+            echo "base=$(jq -r .base.sha "$RUNNER_TEMP/pr.json")" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=origin/$base_ref" >> "$GITHUB_OUTPUT"
+          fi
+
+          # The discussion, oldest first, each entry capped, keeping the most
+          # recent 60k characters. The request itself is left out of it.
+          {
+            gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+              --jq '.[] | {at: .created_at, who: .user.login, id, kind: "comment", body}'
+            gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+              --jq '.[] | select((.body // "") != "") | {at: .submitted_at, who: .user.login, id, kind: "review (\(.state | ascii_downcase))", body}'
+            gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/comments" \
+              --jq '.[] | {at: .created_at, who: .user.login, id, thread: (.in_reply_to_id // .id), kind: "inline comment on \(.path):\(.line // .original_line)", body}'
+          } > "$RUNNER_TEMP/discussion.jsonl"
+          request_id=$COMMENT_ID
+          [ -n "$request_id" ] || request_id=$(jq -r '.review.id' "$GITHUB_EVENT_PATH")
+          # Every "<" in untrusted text is escaped, so none of it can close a
+          # tag and pass itself off as a <request>.
+          entry='"--- @\(.who), \(.kind), \(.at):\n\(.body | if length > 4000 then .[:4000] + " […]" else . end)\n" | gsub("<"; "&lt;")'
+          {
+            printf '<request author="%s">\n%s\n</request>\n' "$REQUEST_AUTHOR" "$REQUEST_BODY"
+            if [ "$EVENT_NAME" = pull_request_review_comment ]; then
+              printf '\n<thread>\n'
+              printf 'The request was left on %s, line %s, in this part of the diff:\n%s\n\n' \
+                "$REVIEW_PATH" "$REVIEW_LINE" "$DIFF_HUNK" | sed 's/</\&lt;/g'
+              jq -rs --argjson t "$THREAD_ID" --argjson r "$request_id" \
+                "sort_by(.at) | .[] | select(.thread == \$t and .id != \$r) | $entry" "$RUNNER_TEMP/discussion.jsonl"
+              echo '</thread>'
+            fi
+            echo
+            echo '<discussion>'
+            jq -rs --argjson r "$request_id" "sort_by(.at) | .[] | select(.id != \$r) | $entry" \
+              "$RUNNER_TEMP/discussion.jsonl" | tail -c 60000
+            echo '</discussion>'
+          } > "$RUNNER_TEMP/request.txt"
+          # Multi-line, so written with a delimiter no PR text can contain.
+          delimiter="EOF_$(openssl rand -hex 16)"
+          {
+            echo "pr_meta<<$delimiter"
+            jq -r '"PR #\(.number) by \(.user.login): \(.title)\n\n\(.body // "")"' "$RUNNER_TEMP/pr.json"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          echo "reply=answer" >> "$GITHUB_OUTPUT"
+
+      - id: respond
+        if: steps.context.outputs.reply == 'answer'
+        uses: ./.shared/.github/actions/claude-review
+        with:
+          head: ${{ steps.context.outputs.head_sha }}
+          base: ${{ steps.context.outputs.base }}
+          default-branch: ${{ github.event.repository.default_branch }}
+          pr-meta: ${{ steps.context.outputs.pr_meta }}
+          request: ${{ runner.temp }}/request.txt
+          budget-usd: ${{ inputs.budget-usd }}
+          model: ${{ inputs.model }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # Always a new comment, never an edit, and posted even when answering
+      # failed, so whoever asked isn't left waiting on the 👀.
+      - name: Post reply
+        if: >-
+          !cancelled() && steps.mention.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          REPLY_KIND: ${{ steps.context.outputs.reply }}
+          RESPOND_OUTCOME: ${{ steps.respond.outcome }}
+          REPLY: ${{ steps.respond.outputs.output }}
+          TOKENS: ${{ steps.respond.outputs.tokens }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$RUNNER_TEMP/comment.md"
+          if [ "$REPLY_KIND" = fork ]; then
+            echo "I don't answer on pull requests from forks: this workflow holds the repository's secrets, and I'd be reading code from outside it with them." > "$body"
+            footer="<sub>Answering [@$REQUEST_AUTHOR]($REQUEST_URL).</sub>"
+          elif [ "$RESPOND_OUTCOME" = success ] && [ -s "$REPLY" ]; then
+            head -c 60000 "$REPLY" > "$body"
+            footer="<sub>Answering [@$REQUEST_AUTHOR]($REQUEST_URL) at ${HEAD_SHA:0:12}${TOKENS:+ using $TOKENS tokens}.</sub>"
+          else
+            echo "I couldn't answer this; [the run's log]($RUN_URL) says why." > "$body"
+            footer="<sub>Answering [@$REQUEST_AUTHOR]($REQUEST_URL).</sub>"
+          fi
+          printf '\n%s\n' "$footer" >> "$body"
+          if [ "$EVENT_NAME" = pull_request_review_comment ]; then
+            gh api --method POST "repos/$REPO/pulls/$PR_NUMBER/comments/$THREAD_ID/replies" -F "body=@$body" >/dev/null
+          else
+            gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -F "body=@$body" >/dev/null
+          fi

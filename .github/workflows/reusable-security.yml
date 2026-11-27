@@ -1,0 +1,111 @@
+name: Security (reusable)
+
+# A secret scan of the repository's whole history (gitleaks) and a lint of its
+# workflows (actionlint, with shellcheck over every run: block). Nothing here is
+# specific to one repository; call it on push to the default branch and on
+# pull_request.
+#
+# Both tools are pinned by tag and digest in install-tools' own Dockerfile,
+# which Dependabot keeps current, and installed from those images -- not from
+# the caller's pins, so a repository with none needs nothing to use this.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, and all of it scanned: a secret committed and then
+      # deleted is still in the repository for anyone who clones it. The whole
+      # history takes well under a second, so there's no case for working out
+      # just the PR's commit range.
+      #
+      # But only history reachable from HEAD -- on a PR the merge commit, so
+      # main plus the PR; on a push, main. Left to itself gitleaks scans every
+      # ref, and fetch-depth: 0 fetches every branch, so one branch's finding
+      # would fail every other branch's PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # This workflow's own repository, at the commit the caller pinned, so
+      # the actions below are exactly the ones that commit holds: a caller pins
+      # one SHA, and the workflow and its actions can't drift apart. The two
+      # values are checked first because, were either empty, checkout would
+      # quietly fall back to the caller's repository and run its actions.
+      - name: Find the shared actions
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty; can't tell which actions to run"
+            exit 1
+          fi
+          echo "shared actions: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .shared
+          persist-credentials: false
+      - uses: ./.shared/.github/actions/install-tools
+        with:
+          tools: gitleaks
+      # Default rules, no exemptions. gitleaks would otherwise take a
+      # .gitleaks.toml or .gitleaksignore from the checkout, and honour inline
+      # `gitleaks:allow` comments, so a PR could exempt its own secret. A
+      # false positive gets fixed in the history instead.
+      - name: Scan for secrets
+        run: |
+          for f in .gitleaks.toml .gitleaksignore; do
+            if [ -e "$f" ]; then
+              echo "::error file=$f::$f would exempt findings from the secret scan; remove it"
+              exit 1
+            fi
+          done
+          gitleaks git --redact --verbose --log-opts=HEAD --ignore-gitleaks-allow .
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # This workflow's own repository, at the commit the caller pinned, so
+      # the actions below are exactly the ones that commit holds: a caller pins
+      # one SHA, and the workflow and its actions can't drift apart. The two
+      # values are checked first because, were either empty, checkout would
+      # quietly fall back to the caller's repository and run its actions.
+      - name: Find the shared actions
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository or job.workflow_sha is empty; can't tell which actions to run"
+            exit 1
+          fi
+          echo "shared actions: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .shared
+          persist-credentials: false
+      - uses: ./.shared/.github/actions/install-tools
+        with:
+          tools: actionlint
+      # actionlint runs shellcheck over every `run:` block when it finds it on
+      # PATH, which it does on GitHub's Ubuntu runners. That is where most of
+      # what it catches comes from, so fail loudly rather than lint less.
+      - name: Lint workflows
+        run: |
+          command -v shellcheck >/dev/null || { echo "shellcheck not found" >&2; exit 1; }
+          actionlint -color

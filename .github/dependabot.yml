@@ -1,0 +1,32 @@
+version: 2
+# Each ecosystem waits 7 days after a release before proposing it: a release
+# published with stolen credentials is usually found and pulled by then
+# (.github/actions/install-tools/Dockerfile says more).
+updates:
+  # The workflows, and the composite actions under .github/actions, which
+  # Dependabot only looks at when their directories are named.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  # The CI tools the shared workflows run, pinned by tag and digest. Each
+  # update proposes a tag and its digest together.
+  - package-ecosystem: "docker"
+    directory: "/.github/actions/install-tools"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
+  # The Claude Code CLI the review workflows run.
+  - package-ecosystem: "npm"
+    directory: "/.github/actions/install-claude-code"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7

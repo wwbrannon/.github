@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The shared security workflow, run on this repository too -- as a local
+  # call, so a change to it is tested by the PR that makes it.
+  security:
+    uses: ./.github/workflows/reusable-security.yml
+
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the rules that keep these usable from other repositories
+        run: python3 tests/check.py
+      # actionlint (in the security job) shellchecks the workflows' run:
+      # blocks; this covers the scripts the actions run.
+      - name: shellcheck the action scripts
+        run: shellcheck .github/actions/*/*.sh
