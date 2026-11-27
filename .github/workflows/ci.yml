@@ -24,6 +24,9 @@ jobs:
       - name: Check the rules that keep these usable from other repositories
         run: python3 tests/check.py
       # actionlint (in the security job) shellchecks the workflows' run:
-      # blocks; this covers the scripts the actions run.
+      # blocks; this covers the scripts the actions run, with the same pin.
+      - uses: ./.github/actions/install-tools
+        with:
+          tools: shellcheck
       - name: shellcheck the action scripts
         run: shellcheck .github/actions/*/*.sh

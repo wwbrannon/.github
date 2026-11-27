@@ -11,6 +11,14 @@ name: Security (reusable)
 
 on:
   workflow_call:
+    inputs:
+      runner-labels:
+        description: >-
+          space-separated runner labels actionlint doesn't know (self-hosted or
+          larger runners), the one thing a repository's own actionlint config
+          was for
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -99,13 +107,49 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .shared
           persist-credentials: false
+      # shellcheck too: actionlint runs it over every `run:` block when it
+      # finds it on PATH, and that is where most of what it catches comes
+      # from. Pinned like actionlint, so a runner image update can't change
+      # what passes; install-tools puts both ahead of the runner's on PATH.
       - uses: ./.shared/.github/actions/install-tools
         with:
-          tools: actionlint
-      # actionlint runs shellcheck over every `run:` block when it finds it on
-      # PATH, which it does on GitHub's Ubuntu runners. That is where most of
-      # what it catches comes from, so fail loudly rather than lint less.
+          tools: actionlint shellcheck
+      # Shared rules, no exemptions -- as for gitleaks. Left to themselves,
+      # actionlint reads .github/actionlint.y*ml and shellcheck reads
+      # .shellcheckrc from the checkout, which on a pull request is the change
+      # under review, so a PR could switch off the check that gates it. So
+      # the checkout may have neither, and actionlint gets this repository's
+      # config, at the commit the caller pinned. An inline
+      # `# shellcheck disable=` stays possible, but it sits in the diff next
+      # to what it silences.
+      #
+      # A caller that runs on self-hosted or larger runners names their
+      # labels in the runner-labels input instead, in its calling workflow:
+      # plain names only, added to a copy of the shared config, so the input
+      # can declare labels but never ignore a finding.
       - name: Lint workflows
+        env:
+          RUNNER_LABELS: ${{ inputs.runner-labels }}
         run: |
-          command -v shellcheck >/dev/null || { echo "shellcheck not found" >&2; exit 1; }
-          actionlint -color
+          found=$(find . -path ./.shared -prune -o -path ./.git -prune -o \
+            \( -name .shellcheckrc -o -name shellcheckrc -o -path ./.github/actionlint.yaml -o -path ./.github/actionlint.yml \) -print)
+          if [ -n "$found" ]; then
+            while read -r f; do
+              echo "::error file=${f#./}::${f#./} would change what the workflow lint checks; remove it"
+            done <<<"$found"
+            exit 1
+          fi
+          test "$(command -v shellcheck)" = "$RUNNER_TEMP/tools/shellcheck" \
+            || { echo "shellcheck isn't the pinned one: $(command -v shellcheck)" >&2; exit 1; }
+          config="$RUNNER_TEMP/actionlint.yaml"
+          cp .shared/.github/security/actionlint.yaml "$config"
+          read -rd "" -a labels <<<"$RUNNER_LABELS" || true  # every line, not just the first
+          if [ "${#labels[@]}" -gt 0 ]; then
+            printf 'self-hosted-runner:\n  labels:\n' >> "$config"
+            for label in "${labels[@]}"; do
+              [[ $label =~ ^[A-Za-z0-9._-]+$ ]] \
+                || { echo "::error::runner label '$label' isn't a plain name"; exit 1; }
+              printf '    - %s\n' "$label" >> "$config"
+            done
+          fi
+          actionlint -color -config-file "$config"
