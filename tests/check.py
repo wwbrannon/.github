@@ -85,13 +85,26 @@ for f in action_files + workflow_files:
 check("no tool is pinned outside the pins file (cosign excepted)", not stray, "; ".join(stray))
 
 print("  action references")
-unpinned = []
+# The one exception: this repository's own caller workflows call its reusable
+# workflows at @main, so a pull request is reviewed by main's engine rather
+# than its own. Only there: a reusable workflow or an action gets this
+# repository from .shared/, never by a remote reference.
+SELF = "wwbrannon/.github/"
+unpinned, self_ref = [], []
 for f in action_files + workflow_files:
     for n, line in code_lines(text[f]):
         m = re.search(r"uses: ([^\s#]+)", line)
-        if m and not m.group(1).startswith("./") and not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", m.group(1)):
+        if not m or m.group(1).startswith("./"):
+            continue
+        if m.group(1).startswith(SELF):
+            if f in reusable or f in action_files or not re.fullmatch(
+                    re.escape(SELF) + r"\.github/workflows/reusable-[\w-]+\.yml@main", m.group(1)):
+                self_ref.append(f"{f}:{n} {m.group(1)}")
+        elif not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", m.group(1)):
             unpinned.append(f"{f}:{n} {m.group(1)}")
 check("every third-party action is pinned to a commit SHA", not unpinned, "; ".join(unpinned))
+check("this repository refers to itself only from its callers, to a reusable workflow at @main",
+      not self_ref, "; ".join(self_ref))
 
 local_in_action, missing_sibling = [], []
 for f in action_files:
