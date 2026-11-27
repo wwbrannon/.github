@@ -143,7 +143,7 @@ jobs:
             || { echo "shellcheck isn't the pinned one: $(command -v shellcheck)" >&2; exit 1; }
           config="$RUNNER_TEMP/actionlint.yaml"
           cp .shared/.github/security/actionlint.yaml "$config"
-          read -ra labels <<<"$RUNNER_LABELS"
+          read -rd "" -a labels <<<"$RUNNER_LABELS" || true  # every line, not just the first
           if [ "${#labels[@]}" -gt 0 ]; then
             printf 'self-hosted-runner:\n  labels:\n' >> "$config"
             for label in "${labels[@]}"; do
