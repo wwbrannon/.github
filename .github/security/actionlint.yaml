@@ -2,7 +2,9 @@
 # -config-file to every caller. It is kept out of actionlint's default place
 # (.github/actionlint.yaml), which the workflow refuses to find in a caller's
 # checkout: there, a pull request could use it to switch off the lint that
-# gates it. Changes here reach callers only when they move their pin.
+# gates it. Changes here reach callers only when they move their pin. The
+# workflow appends a caller's runner-labels input as self-hosted-runner.labels,
+# so there is none here.
 #
 # The one exception: the reusable workflows check out this repository at their
 # own commit with job.workflow_repository and job.workflow_sha, which GitHub

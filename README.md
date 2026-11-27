@@ -36,7 +36,15 @@ jobs:
 ```
 
 The checks report as `security / gitleaks` and `security / actionlint`; those
-are the names to require in a branch ruleset.
+are the names to require in a branch ruleset. A repository that runs on
+self-hosted or larger runners names their labels for actionlint, since it
+can't have its own actionlint config:
+
+```yaml
+    uses: wwbrannon/.github/.github/workflows/reusable-security.yml@<sha> # <tag>
+    with:
+      runner-labels: gpu ubuntu-latest-8-cores
+```
 
 ### Claude review and mentions
 
