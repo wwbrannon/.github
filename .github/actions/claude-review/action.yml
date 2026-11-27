@@ -1,0 +1,120 @@
+name: Claude review
+description: Review a change, or answer a request about it, with headless read-only Claude Code
+
+# Runs claude-review.sh, beside this file, which says what Claude is given and
+# what it can't touch. Run it from a full-history checkout of the caller's
+# default branch (actions/checkout with that ref and fetch-depth 0): the review
+# criteria are read from there, at .github/claude-review/prompt.md, never from
+# the change under review. Needs claude on PATH (../install-claude-code) and jq.
+#
+# The output goes to the file named by the `output` output, the run's log to
+# `log`. The step fails only if no review or reply could be produced, never
+# because of what one says.
+inputs:
+  head:
+    description: the revision to review (a SHA)
+    required: true
+  base:
+    description: the ref to review it against; the review covers merge-base(base, head)..head
+    required: true
+  default-branch:
+    description: the branch the criteria come from
+    required: true
+  pr-meta:
+    description: the PR's number, author, title and body, passed to Claude as untrusted context
+    default: ""
+  request:
+    description: >-
+      a file holding an @claude request and its discussion, to answer instead of
+      reviewing (respond.md describes the format)
+    default: ""
+  inline:
+    description: >-
+      "true" to also write the findings on lines the diff touches as GitHub
+      review comments, to the file named by the `inline` output
+    default: "false"
+  budget-usd:
+    description: >-
+      a runaway guard, in dollars at list price; on a subscription token the
+      cost is notional, but the cap works the same way
+    default: "5"
+  model:
+    description: the model; empty for the script's pin, the one the prompts were tuned on
+    default: ""
+  claude-code-oauth-token:
+    description: a Claude subscription token (claude setup-token); used over the API key when both are set
+    default: ""
+  anthropic-api-key:
+    description: a Console API key
+    default: ""
+
+outputs:
+  output:
+    description: the review or reply, as Markdown ready to post
+    value: ${{ steps.run.outputs.output }}
+  log:
+    description: the run's log, with "cost:" and "tokens:" lines
+    value: ${{ steps.run.outputs.log }}
+  inline:
+    description: the inline comments, as a JSON array (when `inline` is "true")
+    value: ${{ steps.run.outputs.inline }}
+  tokens:
+    description: the tokens the run used, as one line for a footer
+    value: ${{ steps.run.outputs.tokens }}
+
+runs:
+  using: composite
+  steps:
+    # Inputs reach the script through env, never interpolated into the script
+    # text, so a PR title can't inject shell.
+    - id: run
+      shell: bash
+      env:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        HEAD_SHA: ${{ inputs.head }}
+        BASE: ${{ inputs.base }}
+        CLAUDE_REVIEW_DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        CLAUDE_REVIEW_PR_META: ${{ inputs.pr-meta }}
+        CLAUDE_REVIEW_REQUEST: ${{ inputs.request }}
+        INLINE: ${{ inputs.inline }}
+        CLAUDE_REVIEW_BUDGET_USD: ${{ inputs.budget-usd }}
+        CLAUDE_REVIEW_MODEL: ${{ inputs.model }}
+        CLAUDE_REVIEW_OFFLINE: "1"
+      run: |
+        set -uo pipefail
+        # Claude Code prefers an API key over an OAuth token when it sees
+        # both, so drop the key to make the subscription token win.
+        if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+          unset ANTHROPIC_API_KEY
+          echo "auth: subscription token (CLAUDE_CODE_OAUTH_TOKEN)"
+        elif [ -n "$ANTHROPIC_API_KEY" ]; then
+          unset CLAUDE_CODE_OAUTH_TOKEN
+          echo "auth: API key (ANTHROPIC_API_KEY)"
+        else
+          echo "::error::No credential: set CLAUDE_CODE_OAUTH_TOKEN (from claude setup-token) or ANTHROPIC_API_KEY as a repo secret"
+          exit 1
+        fi
+        [ -n "$CLAUDE_REVIEW_MODEL" ] || unset CLAUDE_REVIEW_MODEL
+        out="$RUNNER_TEMP/claude-review"
+        mkdir -p "$out"
+        if [ "$INLINE" = true ]; then
+          export CLAUDE_REVIEW_INLINE="$out/inline.json"
+        fi
+        {
+          echo "output=$out/output.md"
+          echo "log=$out/log.txt"
+          echo "inline=${CLAUDE_REVIEW_INLINE:-}"
+        } >> "$GITHUB_OUTPUT"
+        status=0
+        bash "$GITHUB_ACTION_PATH/claude-review.sh" "$HEAD_SHA" "$BASE" \
+          > "$out/output.md" 2> "$out/log.txt" || status=$?
+        cat "$out/log.txt"
+        kind=review
+        [ -z "$CLAUDE_REVIEW_REQUEST" ] || kind=reply
+        {
+          echo "### Claude $kind at ${HEAD_SHA:0:12}"
+          grep -E '^(cost|tokens):' "$out/log.txt" || true
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "tokens=$(sed -n 's/^tokens: //p' "$out/log.txt" | tail -n 1)" >> "$GITHUB_OUTPUT"
+        exit "$status"

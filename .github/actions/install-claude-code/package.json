@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "The Claude Code CLI the review workflows run, pinned here so Dependabot keeps it current. Only the Linux x64 build: it is what the runners need, and it has no install scripts.",
+  "dependencies": {
+    "@anthropic-ai/claude-code-linux-x64": "2.1.332"
+  }
+}

@@ -1,0 +1,9 @@
+# The reusable workflows check out this repository at their own commit with
+# job.workflow_repository and job.workflow_sha, which GitHub documents
+# (docs.github.com, "Contexts reference", the job context) but actionlint
+# 1.7.12 doesn't know yet (rhysd/actionlint#705, #707). Only those two
+# properties, only in those files; delete this once a release supports them.
+paths:
+  .github/workflows/reusable-*.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'
