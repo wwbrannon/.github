@@ -70,7 +70,7 @@ check("every pin is an image by tag and digest, named once, with a path", not ba
 
 installed = set()
 for f in workflow_files:
-    for m in re.finditer(r"uses: \./\.shared/\.github/actions/install-tools\n(?:.*\n)*?\s+tools: (.+)", text[f]):
+    for m in re.finditer(r"uses: \./(?:\.shared/)?\.github/actions/install-tools\n(?:.*\n)*?\s+tools: (.+)", text[f]):
         installed.update(m.group(1).split())
 check("every tool installed is pinned", installed <= set(pins), ", ".join(sorted(installed - set(pins))))
 check("every pin is installed somewhere", set(pins) <= installed, ", ".join(sorted(set(pins) - installed)))

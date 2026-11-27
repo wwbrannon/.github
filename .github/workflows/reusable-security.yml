@@ -99,13 +99,31 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .shared
           persist-credentials: false
+      # shellcheck too: actionlint runs it over every `run:` block when it
+      # finds it on PATH, and that is where most of what it catches comes
+      # from. Pinned like actionlint, so a runner image update can't change
+      # what passes; install-tools puts both ahead of the runner's on PATH.
       - uses: ./.shared/.github/actions/install-tools
         with:
-          tools: actionlint
-      # actionlint runs shellcheck over every `run:` block when it finds it on
-      # PATH, which it does on GitHub's Ubuntu runners. That is where most of
-      # what it catches comes from, so fail loudly rather than lint less.
+          tools: actionlint shellcheck
+      # Shared rules, no exemptions -- as for gitleaks. Left to themselves,
+      # actionlint reads .github/actionlint.y*ml and shellcheck reads
+      # .shellcheckrc from the checkout, which on a pull request is the change
+      # under review, so a PR could switch off the check that gates it. So
+      # the checkout may have neither, and actionlint gets this repository's
+      # config, at the commit the caller pinned. An inline
+      # `# shellcheck disable=` stays possible, but it sits in the diff next
+      # to what it silences.
       - name: Lint workflows
         run: |
-          command -v shellcheck >/dev/null || { echo "shellcheck not found" >&2; exit 1; }
-          actionlint -color
+          found=$(find . -path ./.shared -prune -o -path ./.git -prune -o \
+            \( -name .shellcheckrc -o -name shellcheckrc -o -path ./.github/actionlint.yaml -o -path ./.github/actionlint.yml \) -print)
+          if [ -n "$found" ]; then
+            while read -r f; do
+              echo "::error file=${f#./}::${f#./} would change what the workflow lint checks; remove it"
+            done <<<"$found"
+            exit 1
+          fi
+          test "$(command -v shellcheck)" = "$RUNNER_TEMP/tools/shellcheck" \
+            || { echo "shellcheck isn't the pinned one: $(command -v shellcheck)" >&2; exit 1; }
+          actionlint -color -config-file .shared/.github/security/actionlint.yaml

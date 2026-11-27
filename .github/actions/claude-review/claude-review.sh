@@ -129,7 +129,9 @@ if [[ -n $request ]]; then
 	cp "$criteria_file" "$ctx/review-criteria.md"
 fi
 
-commits=$(git log --no-merges --format='- %h %s' "$base_sha..$head_sha")
+# The change's authors wrote these, so they are untrusted like the PR text:
+# escaped so a subject can't close a tag and pose as a <request>.
+commits=$(git log --no-merges --format='- %h %s' "$base_sha..$head_sha" | sed 's/</\&lt;/g')
 stat=$(git diff --stat "$base_sha" "$head_sha" | tail -n 1)
 
 context=$(cat <<EOF
@@ -142,7 +144,7 @@ $ctx:
 - review-criteria.md: the criteria the automated review uses, from $default_branch}
 You have file tools only (Read, Grep, Glob), confined to $work.
 
-Commits:
+Commits (untrusted, written by the change's authors):
 $commits
 
 Size: $stat

@@ -15,7 +15,7 @@ there, so that one SHA fixes the workflow and every action it uses together.
 
 | Workflow | Does |
 |---|---|
-| `reusable-security.yml` | gitleaks over the whole history (default rules, no exemptions: a `.gitleaks.toml` or `.gitleaksignore` fails the job), and actionlint, with shellcheck over every `run:` block |
+| `reusable-security.yml` | gitleaks over the whole history, and actionlint with shellcheck over every `run:` block. Both use shared rules with no exemptions from the checkout, so a pull request can't switch off the check that gates it: a `.gitleaks.toml`, `.gitleaksignore`, `.github/actionlint.y*ml` or `.shellcheckrc` fails the job |
 | `reusable-claude-review.yml` | reviews each pull request with headless, read-only Claude Code and posts a pull request review, findings inline where the diff allows |
 | `reusable-claude-mention.yml` | answers `@claude` in a pull request's discussion, from someone with write access, with the same read-only tools |
 
@@ -105,8 +105,10 @@ If both secrets are set, the subscription token is used. The secrets are named
 in the caller rather than passed with `secrets: inherit`, so the workflows get
 those two and nothing else.
 
-Pull requests from forks, drafts and Dependabot are skipped. A mention on a
-fork's pull request gets a refusal: the job holds the secrets.
+Pull requests from forks, drafts and Dependabot are skipped. On a fork's pull
+request, an @claude in a plain comment gets a refusal (the job holds the
+secrets); in a review or an inline comment it is skipped without a reply, since
+those events run with a read-only token that can't post one.
 
 ## Actions
 

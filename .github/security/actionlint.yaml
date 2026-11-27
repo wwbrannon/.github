@@ -1,0 +1,17 @@
+# actionlint's config for reusable-security.yml, which passes it with
+# -config-file to every caller. It is kept out of actionlint's default place
+# (.github/actionlint.yaml), which the workflow refuses to find in a caller's
+# checkout: there, a pull request could use it to switch off the lint that
+# gates it. Changes here reach callers only when they move their pin.
+#
+# The one exception: the reusable workflows check out this repository at their
+# own commit with job.workflow_repository and job.workflow_sha, which GitHub
+# documents (docs.github.com, "Contexts reference", the job context) but
+# actionlint 1.7.12 doesn't know yet (rhysd/actionlint#705, #707). Only those
+# two properties, only in files named like these; delete it once a release
+# supports them. To lint this repository locally:
+#   actionlint -config-file .github/security/actionlint.yaml
+paths:
+  .github/workflows/reusable-*.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type'

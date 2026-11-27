@@ -24,8 +24,8 @@
 #     That answers stolen registry credentials, not a hijacked release
 #     workflow, which signs what it is given; the cooldown and review are what
 #     stand between that and CI.
-# Neither image here is signed, so for them the digest, the cooldown and review
-# are all there is.
+# None of the images here is signed, so for them the digest, the cooldown and
+# review are all there is.
 #
 # The binaries in these images are the vendors' own image builds, not always
 # byte-identical to the files on their release pages; each was checked to
@@ -36,3 +36,7 @@ FROM zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c
 
 # path: /usr/local/bin/actionlint
 FROM rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 AS actionlint
+
+# A static binary; actionlint runs it over every run: block.
+# path: /bin/shellcheck
+FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d AS shellcheck
