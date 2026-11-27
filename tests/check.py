@@ -100,7 +100,7 @@ for f in action_files + workflow_files:
         m = re.search(r"uses: ([^\s#]+)", line)
         if not m or m.group(1).startswith("./"):
             continue
-        if m.group(1).startswith(SELF):
+        if m.group(1).lower().startswith(SELF):  # GitHub resolves owner/repo in any case
             if SELF_ALLOWED.get(f) != m.group(1):
                 self_ref.append(f"{f}:{n} {m.group(1)}")
         elif not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", m.group(1)):
