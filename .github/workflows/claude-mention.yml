@@ -1,0 +1,29 @@
+name: Claude mention
+
+# Answers @claude in this repository's own pull requests, from someone with
+# write access, using its own reusable workflow at @main for the same reason
+# as claude-review.yml. Switched on and off with the review.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+# No concurrency group: it would drop mentions made in quick succession.
+
+jobs:
+  respond:
+    if: vars.CLAUDE_REVIEW_ENABLED == 'true'
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: wwbrannon/.github/.github/workflows/reusable-claude-mention.yml@main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

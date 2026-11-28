@@ -2,9 +2,11 @@
 
 The CI pieces my repositories have in common: a security check, Claude pull
 request reviews and @claude answers, and the actions they are built from.
-Everything is pinned (third-party actions by commit SHA, tools by image digest
-or checksum, Claude Code by lockfile), and Dependabot keeps it current here, in
-one place, with a week's cooldown on every release.
+Everything callers run is pinned (third-party actions by commit SHA, tools by
+image digest or checksum, Claude Code by lockfile), and Dependabot keeps it
+current here, in one place, with a week's cooldown on every release. The one
+mutable reference is this repository's own review of itself, at `@main`; see
+[below](#this-repositorys-own-ci).
 
 ## Reusable workflows
 
@@ -135,6 +137,21 @@ works the same from any repository.
 
 `claude-review.sh` also runs locally, from a checkout of the repository to
 review: `bash path/to/.github/actions/claude-review/claude-review.sh --pr 42`.
+
+## This repository's own CI
+
+- **`ci.yml`** runs the security workflow on this repository as a local call,
+  so a pull request that changes it is tested by its own change, along with
+  `tests/check.py` and shellcheck. `check`, `security / gitleaks` and
+  `security / actionlint` are required to merge.
+- **`claude-review.yml` and `claude-mention.yml`** call this repository's own
+  reusable workflows **at `@main`**. A local call would run the review engine
+  from the pull request's own commit, so a change to the engine would review
+  itself. At `@main` it gets the engine on main, which callers get when they
+  move their pin to it. That is the one mutable reference here, and
+  `tests/check.py` allows it only in those two files.
+  To try an engine change before merging, run `claude-review.sh` locally with
+  `CLAUDE_REVIEW_PROMPT=.github/claude-review/prompt.md`.
 
 ## Updating
 

@@ -85,13 +85,32 @@ for f in action_files + workflow_files:
 check("no tool is pinned outside the pins file (cosign excepted)", not stray, "; ".join(stray))
 
 print("  action references")
-unpinned = []
+# The one exception: this repository's own caller workflows call its reusable
+# workflows at @main, so a pull request is reviewed by main's engine rather
+# than its own. Only there: a reusable workflow or an action gets this
+# repository from .shared/, never by a remote reference.
+SELF = "wwbrannon/.github/"
+SELF_ALLOWED = {  # by name: any other self-reference, ci.yml's included, fails
+    f"{WORKFLOWS}/claude-review.yml": f"{SELF}.github/workflows/reusable-claude-review.yml@main",
+    f"{WORKFLOWS}/claude-mention.yml": f"{SELF}.github/workflows/reusable-claude-mention.yml@main",
+}
+unpinned, self_ref = [], []
 for f in action_files + workflow_files:
     for n, line in code_lines(text[f]):
         m = re.search(r"uses: ([^\s#]+)", line)
-        if m and not m.group(1).startswith("./") and not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", m.group(1)):
+        if not m or m.group(1).startswith("./"):
+            continue
+        if m.group(1).lower().startswith(SELF):  # GitHub resolves owner/repo in any case
+            if SELF_ALLOWED.get(f) != m.group(1):
+                self_ref.append(f"{f}:{n} {m.group(1)}")
+        elif not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", m.group(1)):
             unpinned.append(f"{f}:{n} {m.group(1)}")
 check("every third-party action is pinned to a commit SHA", not unpinned, "; ".join(unpinned))
+check("this repository refers to itself only from its two review callers, at @main",
+      not self_ref, "; ".join(self_ref))
+# ...and the security workflow is tested by the change that makes it.
+check("ci.yml calls the security workflow locally",
+      re.search(r"^    uses: \./\.github/workflows/reusable-security\.yml$", text[f"{WORKFLOWS}/ci.yml"], re.M) is not None)
 
 local_in_action, missing_sibling = [], []
 for f in action_files:
